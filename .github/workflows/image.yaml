@@ -15,7 +15,7 @@ permissions:
 
 jobs:
   test:
-    runs-on: arc-runner-chat-gateway
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
@@ -28,7 +28,7 @@ jobs:
 
   build:
     needs: [test]
-    runs-on: arc-runner-chat-gateway
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: docker/setup-buildx-action@v3
