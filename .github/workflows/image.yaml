@@ -34,6 +34,7 @@ jobs:
           username: aliAljaffer
           password: ${{ secrets.GHCR_TOKEN }}
       - uses: docker/build-push-action@v6
+        id: build
         with:
           context: .
           file: Dockerfile
@@ -47,3 +48,36 @@ jobs:
             org.opencontainers.image.revision=${{ github.sha }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+      - uses: actions/create-github-app-token@v1
+        id: app-token
+        with:
+          app-id: ${{ vars.MANIFEST_APP_ID }}
+          private-key: ${{ secrets.MANIFEST_APP_PRIVATE_KEY }}
+          owner: aliAljaffer
+          repositories: homelab
+
+      - uses: actions/checkout@v4
+        with:
+          repository: ${{ vars.MANIFEST_REPOSITORY }}
+          token: ${{ steps.app-token.outputs.token }}
+          ref: main
+          path: homelab
+
+      - name: Update the homelab manifest
+        env:
+          IMAGE_DIGEST: ${{ steps.build.outputs.digest }}
+        run: |
+          set -euo pipefail
+          image="ghcr.io/alialjaffer/chat-gateway@${IMAGE_DIGEST}"
+          file="homelab/kubernetes/apps/chat/deployment.yaml"
+          sed -i -E "s#image: ghcr.io/alialjaffer/chat-gateway@sha256:[0-9a-f]+#image: ${image}#g" "$file"
+          if git -C homelab diff --quiet -- "$file"; then
+            echo "manifest already current"
+            exit 0
+          fi
+          git -C homelab config user.name "update-manifests-homelab[bot]"
+          git -C homelab config user.email "5511128+update-manifests-homelab[bot]@users.noreply.github.com"
+          git -C homelab add kubernetes/apps/chat/deployment.yaml
+          git -C homelab commit -m "Update the chat image to ${GITHUB_SHA::12}."
+          git -C homelab push origin main
