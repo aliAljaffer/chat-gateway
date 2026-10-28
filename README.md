@@ -41,7 +41,8 @@ OpenCode package. The homelab nodes cache it after the first pull.
 
 The `image` workflow in `.github/workflows/image.yaml` runs the Go checks, builds
 for `linux/amd64`, and pushes `:latest` and `:<sha>` to GHCR on every push to
-`main`. To build and push by hand:
+`main`. After the push, it uses the `update-manifests-homelab` GitHub App to
+commit the new digest to the homelab manifest. To build and push by hand:
 
 ```bash
 bash build.sh latest

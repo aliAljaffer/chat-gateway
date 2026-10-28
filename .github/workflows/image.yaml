@@ -3,6 +3,10 @@ name: image
 on:
   push:
     branches: [main]
+    paths-ignore:
+      - "**.md"
+      - "dev/**"
+      - ".gitignore"
   workflow_dispatch:
 
 permissions:
