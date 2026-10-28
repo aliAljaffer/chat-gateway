@@ -71,13 +71,14 @@ jobs:
           set -euo pipefail
           image="ghcr.io/alialjaffer/chat-gateway@${IMAGE_DIGEST}"
           file="homelab/kubernetes/apps/chat/deployment.yaml"
+          rel="kubernetes/apps/chat/deployment.yaml"
           sed -i -E "s#image: ghcr.io/alialjaffer/chat-gateway@sha256:[0-9a-f]+#image: ${image}#g" "$file"
-          if git -C homelab diff --quiet -- "$file"; then
+          if git -C homelab diff --quiet -- "$rel"; then
             echo "manifest already current"
             exit 0
           fi
           git -C homelab config user.name "update-manifests-homelab[bot]"
           git -C homelab config user.email "5511128+update-manifests-homelab[bot]@users.noreply.github.com"
-          git -C homelab add kubernetes/apps/chat/deployment.yaml
+          git -C homelab add "$rel"
           git -C homelab commit -m "Update the chat image to ${GITHUB_SHA::12}."
           git -C homelab push origin main
