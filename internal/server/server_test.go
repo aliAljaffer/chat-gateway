@@ -1,22 +1,25 @@
 package server
 
 import (
-	"context"
 	"encoding/json"
 	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/aliAljaffer/chat-gateway/internal/apps"
 	"github.com/aliAljaffer/chat-gateway/internal/config"
 	"github.com/aliAljaffer/chat-gateway/internal/opencode"
-	"github.com/aliAljaffer/chat-gateway/internal/store"
 )
+
+const testKey = "chat_test_key_012345678901234567890123456789"
 
 type capturedPrompt struct {
 	Agent  string          `json:"agent"`
@@ -126,56 +129,57 @@ func (f *fakeOpenCode) lastPrompt(t *testing.T) capturedPrompt {
 	return f.prompts[len(f.prompts)-1]
 }
 
-func testConfig(openCodeURL string) config.Config {
+func testConfig(openCodeURL, appsFile string) config.Config {
 	return config.Config{
 		Addr:            ":0",
-		DBPath:          "",
 		OpenCodeURL:     openCodeURL,
 		OpenCodeAgent:   "assistant",
+		AppsFile:        appsFile,
 		ChatTimeout:     5 * time.Second,
 		RatePerMinute:   0,
 		MaxBodyBytes:    64 << 10,
 		MaxMessages:     8,
 		MaxMessageChars: 2000,
 		MaxContextChars: 16000,
-		HistoryMessages: 20,
-		DevUI:           true,
-		Model:           "test-model",
 	}
 }
 
-func newTestServer(t *testing.T, cfg config.Config) (*Server, *store.Store) {
+func writeApps(t *testing.T, prompt string) string {
 	t.Helper()
-	st, err := store.Open(t.TempDir() + "/test.db")
+	path := filepath.Join(t.TempDir(), "apps.json")
+	data, err := json.Marshal(map[string]any{
+		"apps": []map[string]string{{
+			"id":            "test",
+			"key":           testKey,
+			"system_prompt": prompt,
+		}},
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { st.Close() })
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
+func newTestServer(t *testing.T, cfg config.Config) *Server {
+	t.Helper()
+	reg, err := apps.Load(cfg.AppsFile)
+	if err != nil {
+		t.Fatal(err)
+	}
 	oc := opencode.New(cfg.OpenCodeURL, cfg.OpenCodeAgent, slog.New(slog.NewTextHandler(io.Discard, nil)))
-	srv, err := New(cfg, st, oc, slog.New(slog.NewTextHandler(io.Discard, nil)))
-	if err != nil {
-		t.Fatal(err)
-	}
-	return srv, st
-}
-
-func createApp(t *testing.T, st *store.Store, prompt string) (store.App, string) {
-	t.Helper()
-	app, key, err := st.CreateApp(context.Background(), "test", prompt)
-	if err != nil {
-		t.Fatal(err)
-	}
-	return app, key
+	return New(cfg, reg, oc, slog.New(slog.NewTextHandler(io.Discard, nil)))
 }
 
 func TestAPIChatUsesTheAppPromptAndContext(t *testing.T) {
 	fake := newFakeOpenCode(t)
-	srv, st := newTestServer(t, testConfig(fake.server.URL))
-	_, key := createApp(t, st, "You are Gersz.")
+	srv := newTestServer(t, testConfig(fake.server.URL, writeApps(t, "You are Gersz.")))
 
 	body := `{"messages":[{"role":"user","content":"How much did I spend?"}],"context":"{\"may\":\"3,500.00 SAR\"}"}`
 	req := httptest.NewRequest(http.MethodPost, "/v1/chat", strings.NewReader(body))
-	req.Header.Set("Authorization", "Bearer "+key)
+	req.Header.Set("Authorization", "Bearer "+testKey)
 	rec := httptest.NewRecorder()
 	srv.Handler().ServeHTTP(rec, req)
 
@@ -207,8 +211,7 @@ func TestAPIChatUsesTheAppPromptAndContext(t *testing.T) {
 
 func TestAPIChatRejectsBadShapeAndAuth(t *testing.T) {
 	fake := newFakeOpenCode(t)
-	srv, st := newTestServer(t, testConfig(fake.server.URL))
-	_, key := createApp(t, st, "test")
+	srv := newTestServer(t, testConfig(fake.server.URL, writeApps(t, "test")))
 
 	cases := map[string]string{
 		"missing messages": `{}`,
@@ -221,7 +224,7 @@ func TestAPIChatRejectsBadShapeAndAuth(t *testing.T) {
 	for name, body := range cases {
 		t.Run(name, func(t *testing.T) {
 			req := httptest.NewRequest(http.MethodPost, "/v1/chat", strings.NewReader(body))
-			req.Header.Set("Authorization", "Bearer "+key)
+			req.Header.Set("Authorization", "Bearer "+testKey)
 			rec := httptest.NewRecorder()
 			srv.Handler().ServeHTTP(rec, req)
 			if rec.Code != http.StatusBadRequest && rec.Code != http.StatusUnprocessableEntity {
@@ -230,22 +233,32 @@ func TestAPIChatRejectsBadShapeAndAuth(t *testing.T) {
 		})
 	}
 
-	req := httptest.NewRequest(http.MethodPost, "/v1/chat", strings.NewReader(`{"messages":[{"role":"user","content":"hi"}]}`))
-	rec := httptest.NewRecorder()
-	srv.Handler().ServeHTTP(rec, req)
-	if rec.Code != http.StatusUnauthorized {
-		t.Fatalf("no key status = %d", rec.Code)
+	for name, header := range map[string]string{
+		"no key":     "",
+		"wrong key":  "Bearer " + testKey + "x",
+		"bad scheme": "Basic " + testKey,
+	} {
+		t.Run(name, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodPost, "/v1/chat", strings.NewReader(`{"messages":[{"role":"user","content":"hi"}]}`))
+			if header != "" {
+				req.Header.Set("Authorization", header)
+			}
+			rec := httptest.NewRecorder()
+			srv.Handler().ServeHTTP(rec, req)
+			if rec.Code != http.StatusUnauthorized {
+				t.Fatalf("status = %d", rec.Code)
+			}
+		})
 	}
 }
 
 func TestAPIChatStreamsDeltas(t *testing.T) {
 	fake := newFakeOpenCode(t)
-	srv, st := newTestServer(t, testConfig(fake.server.URL))
-	_, key := createApp(t, st, "test")
+	srv := newTestServer(t, testConfig(fake.server.URL, writeApps(t, "test")))
 
 	req := httptest.NewRequest(http.MethodPost, "/v1/chat/stream",
 		strings.NewReader(`{"messages":[{"role":"user","content":"hi"}]}`))
-	req.Header.Set("Authorization", "Bearer "+key)
+	req.Header.Set("Authorization", "Bearer "+testKey)
 	rec := httptest.NewRecorder()
 	srv.Handler().ServeHTTP(rec, req)
 
@@ -263,15 +276,14 @@ func TestAPIChatStreamsDeltas(t *testing.T) {
 
 func TestRateLimit(t *testing.T) {
 	fake := newFakeOpenCode(t)
-	cfg := testConfig(fake.server.URL)
+	cfg := testConfig(fake.server.URL, writeApps(t, "test"))
 	cfg.RatePerMinute = 1
-	srv, st := newTestServer(t, cfg)
-	_, key := createApp(t, st, "test")
+	srv := newTestServer(t, cfg)
 	body := `{"messages":[{"role":"user","content":"hi"}]}`
 
 	for i := 0; i < 2; i++ {
 		req := httptest.NewRequest(http.MethodPost, "/v1/chat", strings.NewReader(body))
-		req.Header.Set("Authorization", "Bearer "+key)
+		req.Header.Set("Authorization", "Bearer "+testKey)
 		rec := httptest.NewRecorder()
 		srv.Handler().ServeHTTP(rec, req)
 		if i == 0 && rec.Code != http.StatusOK {
@@ -283,117 +295,17 @@ func TestRateLimit(t *testing.T) {
 	}
 }
 
-func TestUIRequiresAccessAndRefusesCrossSite(t *testing.T) {
-	fake := newFakeOpenCode(t)
-	cfg := testConfig(fake.server.URL)
-	cfg.DevUI = false
-	srv, _ := newTestServer(t, cfg)
-
-	rec := httptest.NewRecorder()
-	srv.Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/me", nil))
-	if rec.Code != http.StatusServiceUnavailable {
-		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
-	}
-
-	cfg.DevUI = true
-	srv, _ = newTestServer(t, cfg)
-	req := httptest.NewRequest(http.MethodPost, "/api/conversations", strings.NewReader("{}"))
-	req.Header.Set("Origin", "https://evil.example")
-	rec = httptest.NewRecorder()
-	srv.Handler().ServeHTTP(rec, req)
-	if rec.Code != http.StatusForbidden {
-		t.Fatalf("cross site status = %d", rec.Code)
-	}
-
-	req = httptest.NewRequest(http.MethodGet, "/api/me", nil)
-	req.Header.Set("X-Chat-Dev-Email", "owner@example.com")
-	rec = httptest.NewRecorder()
-	srv.Handler().ServeHTTP(rec, req)
-	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), "owner@example.com") {
-		t.Fatalf("me status = %d body = %s", rec.Code, rec.Body.String())
-	}
-}
-
-func TestUIAppsAndConversationFlow(t *testing.T) {
-	fake := newFakeOpenCode(t)
-	srv, _ := newTestServer(t, testConfig(fake.server.URL))
-	h := srv.Handler()
-
-	rec := httptest.NewRecorder()
-	h.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/api/apps",
-		strings.NewReader(`{"name":"grooszy","system_prompt":"You are Gersz."}`)))
-	if rec.Code != http.StatusCreated {
-		t.Fatalf("create app status = %d, body = %s", rec.Code, rec.Body.String())
-	}
-	var created struct {
-		App store.App `json:"app"`
-		Key string    `json:"key"`
-	}
-	if err := json.Unmarshal(rec.Body.Bytes(), &created); err != nil {
-		t.Fatal(err)
-	}
-	if !strings.HasPrefix(created.Key, "chat_") {
-		t.Fatalf("key = %q", created.Key)
-	}
-
-	rec = httptest.NewRecorder()
-	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/apps", nil))
-	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), "grooszy") {
-		t.Fatalf("list apps status = %d, body = %s", rec.Code, rec.Body.String())
-	}
-
-	rec = httptest.NewRecorder()
-	h.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/api/conversations", strings.NewReader("{}")))
-	if rec.Code != http.StatusCreated {
-		t.Fatalf("create conversation status = %d, body = %s", rec.Code, rec.Body.String())
-	}
-	var conv struct {
-		Conversation store.Conversation `json:"conversation"`
-	}
-	if err := json.Unmarshal(rec.Body.Bytes(), &conv); err != nil {
-		t.Fatal(err)
-	}
-
-	rec = httptest.NewRecorder()
-	h.ServeHTTP(rec, httptest.NewRequest(http.MethodPost,
-		"/api/conversations/"+conv.Conversation.ID+"/messages",
-		strings.NewReader(`{"content":"Hello"}`)))
-	if rec.Code != http.StatusOK {
-		t.Fatalf("send status = %d, body = %s", rec.Code, rec.Body.String())
-	}
-	if !strings.Contains(rec.Body.String(), "event: done") {
-		t.Fatalf("send body = %s", rec.Body.String())
-	}
-
-	rec = httptest.NewRecorder()
-	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet,
-		"/api/conversations/"+conv.Conversation.ID+"/messages", nil))
-	if rec.Code != http.StatusOK {
-		t.Fatalf("messages status = %d, body = %s", rec.Code, rec.Body.String())
-	}
-	if !strings.Contains(rec.Body.String(), "Hello from the model.") {
-		t.Fatalf("messages body = %s", rec.Body.String())
-	}
-
-	rec = httptest.NewRecorder()
-	h.ServeHTTP(rec, httptest.NewRequest(http.MethodDelete, "/api/apps/"+created.App.ID, nil))
-	if rec.Code != http.StatusNoContent {
-		t.Fatalf("delete app status = %d", rec.Code)
-	}
-}
-
 func TestReadyChecksOpenCode(t *testing.T) {
 	fake := newFakeOpenCode(t)
-	srv, _ := newTestServer(t, testConfig(fake.server.URL))
+	srv := newTestServer(t, testConfig(fake.server.URL, writeApps(t, "test")))
 	rec := httptest.NewRecorder()
 	srv.Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/readyz", nil))
 	if rec.Code != http.StatusOK {
 		t.Fatalf("ready status = %d, body = %s", rec.Code, rec.Body.String())
 	}
 
-	cfg := testConfig(fake.server.URL)
-	cfg.OpenCodeURL = "http://127.0.0.1:1"
-	srv, _ = newTestServer(t, cfg)
+	cfg := testConfig("http://127.0.0.1:1", writeApps(t, "test"))
+	srv = newTestServer(t, cfg)
 	rec = httptest.NewRecorder()
 	srv.Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/readyz", nil))
 	if rec.Code != http.StatusServiceUnavailable {

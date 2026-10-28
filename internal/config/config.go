@@ -10,43 +10,29 @@ import (
 
 type Config struct {
 	Addr            string
-	DBPath          string
 	OpenCodeURL     string
 	OpenCodeAgent   string
-	Workspace       string
+	AppsFile        string
 	ChatTimeout     time.Duration
 	RatePerMinute   int
 	MaxBodyBytes    int64
 	MaxMessages     int
 	MaxMessageChars int
 	MaxContextChars int
-	HistoryMessages int
-	DevUI           bool
-	CFTeamDomain    string
-	CFAudience      string
-	OwnerEmail      string
-	Model           string
 }
 
 func Load() (Config, error) {
 	c := Config{
 		Addr:            envOr("CHAT_ADDR", ":8080"),
-		DBPath:          envOr("CHAT_DB", "/data/gateway.db"),
 		OpenCodeURL:     envOr("OPENCODE_URL", "http://127.0.0.1:4096"),
 		OpenCodeAgent:   envOr("OPENCODE_AGENT", "assistant"),
-		Workspace:       envOr("CHAT_WORKSPACE", "/workspace"),
+		AppsFile:        envOr("CHAT_APPS_FILE", "/apps/apps.json"),
 		ChatTimeout:     120 * time.Second,
 		RatePerMinute:   30,
 		MaxBodyBytes:    64 << 10,
 		MaxMessages:     8,
 		MaxMessageChars: 2000,
 		MaxContextChars: 16000,
-		HistoryMessages: 20,
-		DevUI:           envBool("CHAT_DEV_UI"),
-		CFTeamDomain:    strings.TrimSpace(os.Getenv("CF_ACCESS_TEAM_DOMAIN")),
-		CFAudience:      strings.TrimSpace(os.Getenv("CF_ACCESS_AUD")),
-		OwnerEmail:      strings.ToLower(strings.TrimSpace(os.Getenv("CHAT_OWNER_EMAIL"))),
-		Model:           envOr("CHAT_MODEL", ""),
 	}
 
 	if v := os.Getenv("CHAT_TIMEOUT"); v != "" {
@@ -73,6 +59,9 @@ func Load() (Config, error) {
 	if !strings.HasPrefix(c.OpenCodeURL, "http://") && !strings.HasPrefix(c.OpenCodeURL, "https://") {
 		return Config{}, fmt.Errorf("OPENCODE_URL must be an http or https URL")
 	}
+	if strings.TrimSpace(c.AppsFile) == "" {
+		return Config{}, fmt.Errorf("CHAT_APPS_FILE must not be empty")
+	}
 	return c, nil
 }
 
@@ -81,9 +70,4 @@ func envOr(name, fallback string) string {
 		return v
 	}
 	return fallback
-}
-
-func envBool(name string) bool {
-	v := strings.TrimSpace(os.Getenv(name))
-	return v == "1" || strings.EqualFold(v, "true")
 }

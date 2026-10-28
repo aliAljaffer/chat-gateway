@@ -7,14 +7,13 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
-	"path/filepath"
 	"syscall"
 	"time"
 
+	"github.com/aliAljaffer/chat-gateway/internal/apps"
 	"github.com/aliAljaffer/chat-gateway/internal/config"
 	"github.com/aliAljaffer/chat-gateway/internal/opencode"
 	"github.com/aliAljaffer/chat-gateway/internal/server"
-	"github.com/aliAljaffer/chat-gateway/internal/store"
 )
 
 func main() {
@@ -30,23 +29,12 @@ func run(log *slog.Logger) error {
 	if err != nil {
 		return err
 	}
-	if err := os.MkdirAll(filepath.Dir(cfg.DBPath), 0o750); err != nil {
-		return err
-	}
-	if err := os.MkdirAll(cfg.Workspace, 0o750); err != nil {
-		return err
-	}
-	st, err := store.Open(cfg.DBPath)
+	reg, err := apps.Load(cfg.AppsFile)
 	if err != nil {
 		return err
 	}
-	defer st.Close()
-
 	oc := opencode.New(cfg.OpenCodeURL, cfg.OpenCodeAgent, log)
-	srv, err := server.New(cfg, st, oc, log)
-	if err != nil {
-		return err
-	}
+	srv := server.New(cfg, reg, oc, log)
 
 	httpServer := &http.Server{
 		Addr:              cfg.Addr,
@@ -59,7 +47,7 @@ func run(log *slog.Logger) error {
 
 	errs := make(chan error, 1)
 	go func() {
-		log.Info("chat gateway listening", "addr", cfg.Addr, "ui_auth", uiMode(cfg), "model", cfg.Model)
+		log.Info("chat gateway listening", "addr", cfg.Addr, "apps", reg.Len())
 		errs <- httpServer.ListenAndServe()
 	}()
 
@@ -74,14 +62,4 @@ func run(log *slog.Logger) error {
 		defer cancel()
 		return httpServer.Shutdown(shutdown)
 	}
-}
-
-func uiMode(cfg config.Config) string {
-	if cfg.DevUI {
-		return "dev"
-	}
-	if cfg.CFAudience == "" || cfg.CFTeamDomain == "" {
-		return "disabled"
-	}
-	return "cloudflare-access"
 }

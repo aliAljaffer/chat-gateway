@@ -1,0 +1,9 @@
+{
+  "apps": [
+    {
+      "id": "dev",
+      "key": "chat_dev_012345678901234567890123456789",
+      "system_prompt": "You are a concise test assistant."
+    }
+  ]
+}
