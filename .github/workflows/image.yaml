@@ -38,6 +38,11 @@ jobs:
           registry: ghcr.io
           username: aliAljaffer
           password: ${{ secrets.GHCR_TOKEN }}
+      - uses: docker/login-action@v3
+        with:
+          registry: harbor.alialjaffer.com
+          username: ${{ secrets.HARBOR_USERNAME }}
+          password: ${{ secrets.HARBOR_PASSWORD }}
       - uses: docker/build-push-action@v6
         id: build
         with:
@@ -48,6 +53,8 @@ jobs:
           tags: |
             ghcr.io/alialjaffer/chat-gateway:latest
             ghcr.io/alialjaffer/chat-gateway:${{ github.sha }}
+            harbor.alialjaffer.com/mirror/chat-gateway:latest
+            harbor.alialjaffer.com/mirror/chat-gateway:${{ github.sha }}
           labels: |
             org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
             org.opencontainers.image.revision=${{ github.sha }}
@@ -74,10 +81,10 @@ jobs:
           IMAGE_DIGEST: ${{ steps.build.outputs.digest }}
         run: |
           set -euo pipefail
-          image="ghcr.io/alialjaffer/chat-gateway@${IMAGE_DIGEST}"
+          image="harbor.alialjaffer.com/mirror/chat-gateway@${IMAGE_DIGEST}"
           file="homelab/kubernetes/apps/chat/deployment.yaml"
           rel="kubernetes/apps/chat/deployment.yaml"
-          sed -i -E "s#image: ghcr.io/alialjaffer/chat-gateway@sha256:[0-9a-f]+#image: ${image}#g" "$file"
+          sed -i -E "s#image: (ghcr\.io/alialjaffer|harbor\.alialjaffer\.com/mirror)/chat-gateway@sha256:[0-9a-f]+#image: ${image}#g" "$file"
           if git -C homelab diff --quiet -- "$rel"; then
             echo "manifest already current"
             exit 0
