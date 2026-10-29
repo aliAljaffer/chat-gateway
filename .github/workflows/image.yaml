@@ -18,6 +18,11 @@ jobs:
     runs-on: arc-runner-chat-gateway
     steps:
       - uses: actions/checkout@v4
+      - name: Verify runner toolchain
+        run: |
+          go version
+          gcc --version | head -1
+
       - run: test -z "$(gofmt -l .)"
       - run: go vet ./...
       - run: go test -race ./...
